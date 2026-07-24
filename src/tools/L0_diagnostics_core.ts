@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { type BridgeDiagnosticsSnapshot, type ToolDefinition, type ToolContext } from './types.js';
 import { type EnvConfig } from '../config/env.js';
+import { getFeatureMaturity } from '../config/feature-maturity.js';
+import {
+  buildCapabilityFeatureFlags,
+  buildDetailedFeatureFlags,
+  buildServerConfigFeatureFlags,
+} from './diagnostics-feature-report.js';
 import { EasyedaApiMethodSchema } from '../bridge/types.js';
 import { PROFILE_DEFINITIONS } from '../config/profiles.js';
 import { SERVER_VERSION } from '../config/version.js';
@@ -15,6 +21,15 @@ import {
 const apiInventoryInputSchema = z.object({
   filter: z.string().optional(),
 });
+
+const featureMaturityEntrySchema = z.object({
+  maturity: z.enum(['implemented', 'experimental', 'reserved']),
+  configured: z.boolean(),
+  effective: z.boolean(),
+  note: z.string(),
+});
+
+const featureMaturitySchema = z.record(z.string(), featureMaturityEntrySchema);
 
 const bridgeDiagnosticsSchema = z.object({
   manager_uptime_ms: z.number().optional(),
@@ -192,6 +207,7 @@ function registerDiagnosticsCore(
       ),
       current_profile: z.string(),
       feature_flags: z.record(z.string(), z.boolean()),
+      feature_maturity: featureMaturitySchema,
       transports: z.array(z.string()),
     }),
     handler: async (_ctx: ToolContext, _params: unknown) => {
@@ -208,12 +224,8 @@ function registerDiagnosticsCore(
         protocol_version: config.MCP_PROTOCOL_VERSION,
         profiles,
         current_profile: config.TOOL_PROFILE,
-        feature_flags: {
-          tasks_enabled: config.MCP_TASKS_ENABLED,
-          apps_enabled: config.MCP_APPS_ENABLED,
-          v2_experimental: config.MCP_V2_EXPERIMENTAL,
-          ordering_enabled: config.JLCPCB_ENABLE_ORDERING,
-        },
+        feature_flags: buildCapabilityFeatureFlags(config),
+        feature_maturity: getFeatureMaturity(config),
         transports: [config.TRANSPORT],
       };
     },
@@ -245,8 +257,12 @@ function registerDiagnosticsCore(
       bridge_port: z.number(),
       mcp_protocol_version: z.string(),
       flags: z.record(z.string(), z.boolean()).optional(),
+      feature_maturity: featureMaturitySchema,
     }),
-    handler: async (_ctx: ToolContext, _params: unknown) => {
+    handler: async (_ctx: ToolContext, params: unknown) => {
+      const { include_flags: includeFlags } = z
+        .object({ include_flags: z.boolean().default(false) })
+        .parse(params);
       return {
         node_env: config.NODE_ENV,
         log_level: config.LOG_LEVEL,
@@ -255,6 +271,8 @@ function registerDiagnosticsCore(
         bridge_host: config.BRIDGE_HOST,
         bridge_port: config.BRIDGE_PORT,
         mcp_protocol_version: config.MCP_PROTOCOL_VERSION,
+        flags: includeFlags ? buildServerConfigFeatureFlags(config) : undefined,
+        feature_maturity: getFeatureMaturity(config),
       };
     },
   });
@@ -321,24 +339,12 @@ function registerDiagnosticsCore(
     inputSchema: z.object({}),
     outputSchema: z.object({
       flags: z.record(z.string(), z.boolean()),
+      maturity: featureMaturitySchema,
     }),
     handler: async (_ctx: ToolContext, _params: unknown) => {
       return {
-        flags: {
-          mcp_tasks_enabled: config.MCP_TASKS_ENABLED,
-          mcp_apps_enabled: config.MCP_APPS_ENABLED,
-          mcp_v2_experimental: config.MCP_V2_EXPERIMENTAL,
-          jlcpcb_ordering_enabled: config.JLCPCB_ENABLE_ORDERING,
-          jlcsearch_enabled: config.JLCSEARCH_ENABLED,
-          mouser_enabled: config.MOUSER_ENABLED,
-          digikey_enabled: config.DIGIKEY_ENABLED,
-          oauth_enabled: config.OAUTH_ENABLED,
-          otel_enabled: config.OTEL_ENABLED,
-          ai_enabled: config.AI_PROVIDER !== 'none',
-          dev_bridge: config.EASYEDA_DEV_BRIDGE,
-          bridge_raw_exec_enabled: config.BRIDGE_RAW_EXEC_ENABLED,
-          raw_exec_experimental: config.MCP_RAW_EXEC_EXPERIMENTAL,
-        },
+        flags: buildDetailedFeatureFlags(config),
+        maturity: getFeatureMaturity(config),
       };
     },
   });

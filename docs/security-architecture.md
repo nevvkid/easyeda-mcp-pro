@@ -107,11 +107,25 @@ Tools are organized into hierarchical profiles: `core` < `pro` < `full` < `dev` 
 - The `TOOL_PROFILE` environment variable selects which tools are enabled.
 - Each tool definition declares a minimum `profile` level.
 - Only tools at or below the active profile are registered on the MCP server.
-- `core` is the default and exposes 47 tools.
-- `pro` exposes 54 tools and adds manufacturing export tools (pick-and-place, PDF, netlist) and the device catalog verification tools.
-- `full` exposes 63 tools and adds the controlled `easyeda_api_call` tool for direct EasyEDA API access.
-- `dev` exposes 67 tools and adds runtime probes for debugging (bridge method probing, component inspection).
-- `experimental` is reserved for future MCP Apps, Tasks, simulation, autorouter, and AI action plan capabilities; it currently does not add registered tools beyond `dev`.
+  The exact counts below are generated from the runtime registry:
+
+<!-- capability-counts:start -->
+
+| Profile        | Registered tools |
+| -------------- | ---------------: |
+| `core`         |               71 |
+| `pro`          |               98 |
+| `full`         |              110 |
+| `dev`          |              115 |
+| `experimental` |              115 |
+
+<!-- capability-counts:end -->
+
+- `core` is the default high-confidence workflow surface.
+- `pro` adds manufacturing exports, compound workflows, autorouting, and offline SPICE verification.
+- `full` adds the controlled `easyeda_api_call` surface and CircuitIR-driven floorplanning.
+- `dev` adds runtime probes for bridge and component diagnostics.
+- `experimental` currently registers the same standard tool set as `dev`; separately gated raw-execution and hot-swap tools are excluded from these counts.
 
 **Security principle:** Privilege escalation is prevented because tool registration happens at startup. Changing the active profile requires a server restart.
 
@@ -121,7 +135,7 @@ Tools are organized into hierarchical profiles: `core` < `pro` < `full` < `dev` 
 
 ### 3.1 `confirmWrite` Gate
 
-All tools that can mutate design state (schematic, PCB, exports) declare `confirmWrite: true` in their definition.
+Tools that can mutate EasyEDA project/design state declare `confirmWrite: true` in their definition. Export tools that only create files under `ARTIFACT_DIR` are classified separately as artifact writes and do not use the design-mutation confirmation gate.
 
 At runtime, the `ToolRegistry.registerAllOnServer()` wrapper:
 
@@ -154,13 +168,30 @@ Agents that author schematics should not treat a successful write call as proof 
 
 **Risk tiers:**
 
-| Risk Level | Tool Type                      | Examples                                                              | confirmWrite Required |
-| :--------- | :----------------------------- | :-------------------------------------------------------------------- | :-------------------- |
-| **Low**    | Read-only, diagnostics         | `easyeda_health_check`, `easyeda_schematic_nets`                      | No                    |
-| **Medium** | Schematic writes               | `easyeda_schematic_place_component`, `easyeda_schematic_add_wire`     | Yes                   |
-| **High**   | PCB writes, exports, API calls | `easyeda_pcb_add_track`, `easyeda_export_gerbers`, `easyeda_api_call` | Yes                   |
+| Effect class            | Examples                                                     | Local `confirmWrite`          | Remote Relay approval                              |
+| :---------------------- | :----------------------------------------------------------- | :---------------------------- | :------------------------------------------------- |
+| Read-only               | `easyeda_health_check`, `easyeda_schematic_nets`             | No                            | No after authentication and pairing                |
+| Design mutation         | `easyeda_schematic_place_component`, `easyeda_pcb_add_track` | Yes                           | Yes                                                |
+| Artifact write          | `easyeda_export_gerbers`, `easyeda_export_pdf`               | No; the design is not mutated | Yes, with `export` risk and `easyeda.export` scope |
+| Controlled API mutation | mutating `easyeda_api_call` paths                            | Yes                           | Strong approval according to the resolved risk     |
 
-### 3.2 Structured Error Handling
+### 3.2 Explicit side-effect classification
+
+Tool metadata distinguishes the operation's effect from its UI/documentation group:
+
+- `read-only`: no persistent project or filesystem change;
+- `design-mutation`: changes EasyEDA project state and requires `confirmWrite=true`;
+- `artifact-write`: creates a file inside the configured artifact directory but does not mutate the design;
+- `local-state-write`: changes local cache/database state;
+- `external-action`: triggers a state change outside the local project.
+
+Legacy tool definitions without an explicit `sideEffect` retain fail-safe behavior: `confirmWrite=true`
+implies `design-mutation`; otherwise they default to `read-only`. Remote Relay authorization uses the
+resolved side effect rather than the broad tool group, so read-only reports in the `export` group are
+not mislabeled as manufacturing exports. Actual file exporters remain `export` risk and require a
+bound human approval before relay dispatch.
+
+### 3.3 Structured Error Handling
 
 All tools return structured errors with machine-readable codes:
 
@@ -172,7 +203,7 @@ All tools return structured errors with machine-readable codes:
 | `ERR_TOOL_NOT_FOUND`         | Tool name does not match a registered tool       |
 | `ERR_INVALID_INPUT`          | Zod schema validation failed on input parameters |
 
-### 3.3 Tool Registration Uniqueness
+### 3.4 Tool Registration Uniqueness
 
 The `ToolRegistry` enforces unique tool names at registration time — duplicate registration throws an error, preventing tool shadowing or override attacks.
 
