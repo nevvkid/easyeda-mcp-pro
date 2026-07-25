@@ -42,32 +42,110 @@ function scalarState(obj: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
- * Extract copper-region geometry into plain flat rings: a list of rings, each a
- * flat `[x, y, x, y, ...]` number array. Handles the shapes an EasyEDA
- * ComplexPolygon can take: an object with `discretize()`, a `{ polygon: [...] }`
- * boundary, a nested `[[ring], [hole]]` array, or a flat token array (control
- * tokens like 'L'/'R' are dropped). Returning plain numbers (not class
- * instances) is what lets the whole payload be JSON-serialised without tripping
- * the WS depth limit that truncates `PCB_PrimitivePoured.getAll` to "[MaxDepth]".
+ * Parse one EasyEDA `TPCB_PolygonSourceArray` — the standard single-polygon source
+ * format in board mil: `[x, y, 'L', x, y, 'ARC', angle, ex, ey, 'R', cx, cy, w, h, rot,
+ * ccw, 'CIRCLE', cx, cy, r, 'C', c1x, c1y, c2x, c2y, x, y, ...]` — into a flat
+ * `[x, y, x, y, ...]` point ring. Arcs/beziers are approximated by their endpoints;
+ * rect/circle are expanded. (Per the easyeda-api-skill IPCB_ComplexPolygon docs, this
+ * is the source data returned by getSource/getSourceStrictComplex — NOT the BETA
+ * discretize(), which returns points in a scaled frame.)
  */
-function extractRings(cp: unknown): number[][] {
-  if (cp == null) return [];
-  const obj = cp as { discretize?: unknown; polygon?: unknown };
-  if (typeof obj.discretize === 'function') {
-    try {
-      return extractRings((obj.discretize as () => unknown)());
-    } catch {
-      /* fall through to the array/polygon paths */
+function parseSourceArray(src: unknown[]): number[] {
+  const out: number[] = [];
+  let i = 0;
+  while (i < src.length) {
+    const t = src[i];
+    if (typeof t === 'number') {
+      out.push(t, src[i + 1] as number);
+      i += 2;
+    } else if (t === 'L') {
+      i += 1;
+    } else if (t === 'ARC' || t === 'CARC') {
+      out.push(src[i + 2] as number, src[i + 3] as number); // arc endpoint
+      i += 4;
+    } else if (t === 'C') {
+      out.push(src[i + 5] as number, src[i + 6] as number); // bezier endpoint
+      i += 7;
+    } else if (t === 'R') {
+      const cx = src[i + 1] as number, cy = src[i + 2] as number;
+      const w = src[i + 3] as number, h = src[i + 4] as number;
+      return [cx - w / 2, cy - h / 2, cx + w / 2, cy - h / 2, cx + w / 2, cy + h / 2, cx - w / 2, cy + h / 2];
+    } else if (t === 'CIRCLE') {
+      const cx = src[i + 1] as number, cy = src[i + 2] as number, r = src[i + 3] as number;
+      const ring: number[] = [];
+      for (let k = 0; k < 24; k++) {
+        const a = (k / 24) * 2 * Math.PI;
+        ring.push(cx + r * Math.cos(a), cy + r * Math.sin(a));
+      }
+      return ring;
+    } else {
+      i += 1;
     }
   }
-  if (Array.isArray(obj.polygon)) return extractRings(obj.polygon);
+  return out;
+}
+
+/** True when every element is a number or a known source-format control token. */
+function looksLikeSource(arr: unknown[]): boolean {
+  return arr.some((t) => typeof t === 'string' && ['L', 'ARC', 'CARC', 'C', 'R', 'CIRCLE'].includes(t))
+    || arr.every((t) => typeof t === 'number');
+}
+
+/**
+ * Copper-region geometry → list of flat `[x,y,...]` rings, in board mil. Prefers the
+ * documented clean accessors on an IPCB_ComplexPolygon (`getSourceStrictComplex` →
+ * `Array<sourceArray>`, else `getSource`, else `toPolygon().getSource()`), then a
+ * `{ polygon }` source array, then a raw source/nested array — and deliberately avoids
+ * the BETA `discretize()` (returns scaled/scattered points).
+ */
+function polygonRings(cp: unknown): number[][] {
+  if (cp == null) return [];
+  const obj = cp as Record<string, unknown>;
+  const call = (name: string): unknown =>
+    typeof obj[name] === 'function' ? (obj[name] as () => unknown).call(obj) : undefined;
+  const strict = call('getSourceStrictComplex');
+  if (Array.isArray(strict)) return strict.map((s) => parseSourceArray(s as unknown[])).filter((r) => r.length >= 6);
+  const src = call('getSource');
+  if (Array.isArray(src)) {
+    if (src.length > 0 && Array.isArray(src[0])) return src.map((s) => parseSourceArray(s as unknown[]));
+    return [parseSourceArray(src)];
+  }
+  const polys = call('toPolygon');
+  if (Array.isArray(polys)) {
+    return polys
+      .map((p) => {
+        const ps = p as Record<string, unknown>;
+        const s = typeof ps.getSource === 'function' ? (ps.getSource as () => unknown).call(ps) : undefined;
+        return Array.isArray(s) ? parseSourceArray(s) : [];
+      })
+      .filter((r) => r.length >= 6);
+  }
+  if (Array.isArray(obj.polygon)) return [parseSourceArray(obj.polygon as unknown[])];
   if (!Array.isArray(cp)) return [];
   const arr = cp as unknown[];
-  if (arr.length > 0 && Array.isArray(arr[0])) {
-    return arr.flatMap((ring) => extractRings(ring));
+  if (arr.length > 0 && Array.isArray(arr[0])) return arr.flatMap((r) => polygonRings(r));
+  if (looksLikeSource(arr)) {
+    const r = parseSourceArray(arr);
+    return r.length >= 6 ? [r] : [];
   }
-  const nums = arr.filter((token): token is number => typeof token === 'number');
-  return nums.length >= 6 ? [nums] : [];
+  return [];
+}
+
+/** Diagnostic: what accessors/shape does a poured fill's complexPolygon actually have? */
+function probeCp(cp: unknown): Record<string, unknown> {
+  const obj = cp as Record<string, unknown>;
+  const isArr = Array.isArray(cp);
+  const arr = isArr ? (cp as unknown[]) : [];
+  return {
+    type: isArr ? 'array' : typeof cp,
+    hasGetSourceStrictComplex: typeof obj?.getSourceStrictComplex === 'function',
+    hasGetSource: typeof obj?.getSource === 'function',
+    hasToPolygon: typeof obj?.toPolygon === 'function',
+    hasDotPolygon: Array.isArray(obj?.polygon),
+    arrLen: isArr ? arr.length : undefined,
+    arrFirst8: isArr ? arr.slice(0, 8) : undefined,
+    arrHasTokens: isArr ? arr.some((t) => typeof t === 'string') : undefined,
+  };
 }
 
 function utf8Base64(text: string): string {
@@ -152,7 +230,7 @@ export function createExportOperations({
         fillMethod: p.pourFillMethod,
         lock: p.primitiveLock,
         name: p.pourName,
-        boundary: extractRings(p.complexPolygon),
+        boundary: polygonRings(p.complexPolygon),
       };
     });
 
@@ -166,19 +244,22 @@ export function createExportOperations({
           return {
             solid: f.fill,
             lineWidth: f.lineWidth,
-            rings: extractRings(asRecord(f.path).complexPolygon),
+            rings: polygonRings(asRecord(f.path).complexPolygon),
           };
         }),
       };
     });
 
-    // One-time structure probe so a future run can refine extraction if a pour's
-    // resolved geometry comes back empty (learn the shape instead of guessing).
-    const firstFill = extractRings(
-      asRecord(asRecord((asRecord(poured[0]).pourFills as unknown[])?.[0]).path).complexPolygon,
-    );
+    // Structure probe — confirms which clean accessor the poured geometry exposes
+    // (getSourceStrictComplex/getSource/toPolygon) and its coordinate range, so a run
+    // can verify the source-format extraction instead of the BETA discretize() frame.
     const sampleCp = asRecord(asRecord((asRecord(poured[0]).pourFills as unknown[])?.[0]).path)
       .complexPolygon;
+    let pmin = Infinity, pmax = -Infinity;
+    for (const p of pouredList)
+      for (const f of p.fills)
+        for (const r of f.rings)
+          for (const v of r) { if (v < pmin) pmin = v; if (v > pmax) pmax = v; }
     const probe = {
       pourCount: pours.length,
       pouredCount: poured.length,
@@ -187,8 +268,8 @@ export function createExportOperations({
         (sum, p) => sum + p.fills.filter((f) => f.rings.length > 0).length,
         0,
       ),
-      firstFillCpType: Array.isArray(sampleCp) ? 'array' : typeof sampleCp,
-      firstFillRingsExtracted: firstFill.length,
+      pouredCoordRange: [pmin === Infinity ? null : Math.round(pmin), pmax === -Infinity ? null : Math.round(pmax)],
+      firstFillCp: probeCp(sampleCp),
     };
 
     const json = JSON.stringify({ schema: 'easyeda-pours@1', pours: pourList, poured: pouredList, probe });
