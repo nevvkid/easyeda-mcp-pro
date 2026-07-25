@@ -16,3 +16,6 @@ proje-ymlenmesi/
 
 # Project-local package-manager stores
 .pnpm-store/
+
+# Vendored upstream reference (git submodule) — not ours to format
+vendor/

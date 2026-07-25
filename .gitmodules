@@ -1,0 +1,3 @@
+[submodule "vendor/easyeda-api-skill"]
+	path = vendor/easyeda-api-skill
+	url = https://github.com/easyeda/easyeda-api-skill.git
