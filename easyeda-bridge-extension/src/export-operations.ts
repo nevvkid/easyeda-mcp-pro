@@ -160,8 +160,31 @@ export function createExportOperations({
   normalizeBinaryResult,
 }: ExportOperationDependencies): ExportOperations {
   async function exportGerbers(params: Record<string, unknown>): Promise<unknown> {
+    // getGerberFile(fileName?, colorSilkscreen?, unit?, digitalFormat?, other?, layers?, objects?)
+    // takes POSITIONAL args — passing the whole params object as `fileName` returns undefined
+    // ("Bridge did not return export data"). Pass a string fileName + `other` so the drill files,
+    // drill table and flying-probe file are included in the zip (defaults omit them).
+    const fileName =
+      typeof params.fileName === 'string'
+        ? params.fileName
+        : typeof params.projectId === 'string'
+          ? `${params.projectId}-Gerber`
+          : 'Gerber';
+    const other = {
+      metallicDrillingInformation: true,
+      nonMetallicDrillingInformation: true,
+      drillTable: true,
+      flyingProbeTestingFile: true,
+    };
     return normalizeBinaryResult(
-      await callFirst(['PCB_ManufactureData.getGerberFile'], params),
+      await callFirst(
+        ['PCB_ManufactureData.getGerberFile'],
+        fileName,
+        false,
+        undefined,
+        undefined,
+        other,
+      ),
       'gerbers.zip',
     );
   }
