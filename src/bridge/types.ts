@@ -63,6 +63,7 @@ export const EasyedaApiMethodSchema = z.enum([
   'pcb.exportPours',
   'pcb.exportPads',
   'pcb.exportRouting',
+  'pcb.exportLengthMatch',
   'pcb.listComponents',
   'pcb.listTracks',
   'pcb.listVias',

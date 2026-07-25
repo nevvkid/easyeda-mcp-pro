@@ -15,6 +15,7 @@ export interface ExportOperations {
   exportPours(params: Record<string, unknown>): Promise<unknown>;
   exportPads(params: Record<string, unknown>): Promise<unknown>;
   exportRouting(params: Record<string, unknown>): Promise<unknown>;
+  exportLengthMatch(params: Record<string, unknown>): Promise<unknown>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -394,6 +395,43 @@ export function createExportOperations({
     return { base64: utf8Base64(json), fileName: 'routing.json' };
   }
 
+  // Length-match report: the design's own equal-length net groups + EasyEDA's authoritative
+  // per-net length. This is the RELIABLE basis for a length-match check — the tool knows the
+  // true connectivity, unlike geometric track-graph reconstruction (which fragments on
+  // via/inner-layer copper). Note: getNetLength is NET-TOTAL (includes any pull-up stub), same
+  // basis EasyEDA's own equal-length DRC uses; within a bus the stubs are ~uniform so the
+  // group spread is a faithful match indicator.
+  async function exportLengthMatch(_params: Record<string, unknown>): Promise<unknown> {
+    const groupsRaw = (await callFirst(['PCB_Drc.getAllEqualLengthNetGroups'])) as unknown[];
+    const groups: unknown[] = [];
+    for (const gRaw of groupsRaw ?? []) {
+      const g = asRecord(gRaw);
+      const nets = Array.isArray(g.nets) ? (g.nets as unknown[]).map(String) : [];
+      const perNet: Array<{ net: string; length_mil: number | null }> = [];
+      for (const net of nets) {
+        const len = await callFirst(['PCB_Net.getNetLength'], net);
+        perNet.push({ net, length_mil: typeof len === 'number' ? len : null });
+      }
+      const lens = perNet.map((n) => n.length_mil).filter((x): x is number => typeof x === 'number');
+      const spread = lens.length ? Math.max(...lens) - Math.min(...lens) : null;
+      groups.push({
+        name: typeof g.name === 'string' ? g.name : null,
+        spread_mil: spread == null ? null : Math.round(spread * 100) / 100,
+        min_mil: lens.length ? Math.min(...lens) : null,
+        max_mil: lens.length ? Math.max(...lens) : null,
+        nets: perNet,
+      });
+    }
+    const json = JSON.stringify({
+      schema: 'easyeda-length-match@1',
+      note: 'lengths = PCB_Net.getNetLength (EasyEDA authoritative, net-total incl. pull-up stubs); '
+        + 'groups = PCB_Drc.getAllEqualLengthNetGroups (the design\'s own equal-length groups). '
+        + 'Compare spread within each group.',
+      groups,
+    });
+    return { base64: utf8Base64(json), fileName: 'length-match.json' };
+  }
+
   return {
     exportGerbers,
     exportRouteContext,
@@ -403,5 +441,6 @@ export function createExportOperations({
     exportPours,
     exportPads,
     exportRouting,
+    exportLengthMatch,
   };
 }

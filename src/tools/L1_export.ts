@@ -902,6 +902,60 @@ function registerExportTools(
       }
     },
   });
+
+  registry.register({
+    name: 'easyeda_pcb_export_length_match',
+    title: 'Export length-match groups with authoritative net lengths',
+    description:
+      "Export the design's own equal-length net groups (PCB_Drc.getAllEqualLengthNetGroups) with EasyEDA's authoritative per-net length (PCB_Net.getNetLength) + the length spread within each group, to one JSON artifact. The RELIABLE basis for a length-match check — uses the tool's real net connectivity, not geometric track reconstruction (which fragments on via/inner-layer copper). Note: net length is net-total (includes any pull-up stub), the same basis EasyEDA's equal-length DRC uses. Read-only; writes one JSON file.",
+    profile: 'pro',
+    evidence: ['official-docs'],
+    risk: 'low',
+    confirmWrite: false,
+    sideEffect: 'artifact-write',
+    group: 'export',
+    version: '1.0.0',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
+    inputSchema: z.object({
+      projectId: z.string(),
+      filePath: z.string().optional(),
+    }),
+    outputSchema: z.object({
+      project_id: z.string(),
+      file_path: z.string().optional(),
+      byte_length: z.number().int().nonnegative().optional(),
+      exported: z.boolean(),
+      not_available: z.boolean().optional(),
+      error: z.string().optional(),
+    }),
+    handler: async (ctx: ToolContext, params: unknown) => {
+      const { projectId, filePath } = params as { projectId: string; filePath?: string };
+      try {
+        const result = await ctx.bridge.call('pcb.exportLengthMatch', { projectId });
+        const written = writeExportPayload(ctx, result, filePath, `${projectId}-length-match.json`);
+        if (!written.ok) {
+          return { project_id: projectId, exported: false, not_available: true, error: written.error };
+        }
+        return {
+          project_id: projectId,
+          file_path: written.filePath,
+          byte_length: written.byteLength,
+          exported: true,
+        };
+      } catch (err) {
+        return {
+          project_id: projectId,
+          exported: false,
+          not_available: true,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  });
 }
 
 export { registerExportTools };
