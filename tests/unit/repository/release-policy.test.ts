@@ -64,6 +64,24 @@ describe('release channel policy', () => {
       publisher.indexOf('Create stable GitHub Release'),
     );
     expect(publisher).toContain('npm publish --provenance --tag "$NPM_DIST_TAG"');
+    expect(publisher).not.toContain('NODE_AUTH_TOKEN="$NPM_TOKEN" npm publish');
+    expect(publisher).toContain('NODE_AUTH_TOKEN="$NPM_TOKEN" npm dist-tag add');
+    expect(publisher).toContain('name: Verify published release');
+    expect(publisher).toContain('pnpm release:verify-published');
+    expect(publisher).toContain('--report-json reports/published-release.json');
+    expect(publisher).toContain('--summary-file reports/published-release-summary.md');
+    expect(publisher).toContain('for attempt in $(seq 1 12)');
+    expect(publisher).toContain('sleep 10');
+    expect(publisher).toContain(
+      'cat reports/published-release-summary.md >> "$GITHUB_STEP_SUMMARY"',
+    );
+    expect(publisher.indexOf('Build and push Docker image')).toBeLessThan(
+      publisher.indexOf('Verify published release'),
+    );
+    expect(publisher).toContain('name: Upload published release verification');
+    expect(publisher).toContain('published-release-${{ env.RELEASE_TAG }}');
+    expect(publisher).toContain('path: reports/published-release.json');
+    expect(publisher).toContain('if: ${{ always() }}');
     expect(publisher).toContain('npm dist-tag add');
     expect(publisher).toContain('./mcp-publisher publish');
     expect(publisher).toContain('type=raw,value=next');
@@ -102,6 +120,34 @@ describe('release channel policy', () => {
     expect(runbook).not.toContain('gh workflow run release-please.yml');
     expect(recovery).toContain('gh workflow run publish-release.yml --ref main');
     expect(recovery).toContain('NPM_TOKEN is retained only for dist-tag repair');
+  });
+
+  it('documents OIDC-only publication, final verification, and live rollback evidence', () => {
+    const openssf = readText('docs/OPENSSF_BEST_PRACTICES.md');
+    const verification = readText('docs/RELEASE_VERIFICATION.md');
+    const process = readText('docs/RELEASE_PROCESS.md');
+    const runbook = readText('docs/release-ci-runbook.md');
+    const recovery = readText('docs/SOLO_MAINTAINER_RECOVERY.md');
+    const combined = [openssf, verification, process, runbook, recovery].join('\n');
+
+    expect(combined).toContain('new npm versions use Trusted Publishing without `NPM_TOKEN`');
+    expect(combined).toContain('`NPM_TOKEN` is restricted to existing-version dist-tag recovery');
+    expect(combined).toContain('Verify published release');
+    expect(combined).toContain('published-release.json');
+    expect(combined).toContain('create/modify/delete rollback');
+    expect(combined).toContain('TestMcp / Schematic1 / P1');
+    expect(openssf).toContain('`signed_releases`                 | Met');
+    expect(openssf).toContain(
+      'provenance and GitHub Artifact Attestations satisfy the project signed-release posture',
+    );
+    expect(openssf).toContain('bus factor remains one');
+    expect(runbook).toContain('EASYEDA_LIVE_WRITE_TESTS=true');
+    expect(runbook).toContain('EASYEDA_EXPECTED_PROJECT=TestMcp');
+    expect(runbook).toContain('EASYEDA_EXPECTED_SCHEMATIC=Schematic1');
+    expect(runbook).toContain('EASYEDA_EXPECTED_PAGE=P1');
+    expect(runbook).toContain(
+      'EASYEDA_TRANSACTION_SMOKE_REPORT_PATH=/tmp/easyeda-transaction-smoke.json',
+    );
   });
 
   it('links the public policy from contributor, process, verification, and docs navigation', () => {
