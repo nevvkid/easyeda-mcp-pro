@@ -241,11 +241,18 @@ export function createExportOperations({
         pourId: pr.pourPrimitiveId,
         fills: fills.map((rawFill) => {
           const f = asRecord(rawFill);
-          return {
-            solid: f.fill,
-            lineWidth: f.lineWidth,
-            rings: polygonRings(asRecord(f.path).complexPolygon),
-          };
+          // Emit the RAW source arrays (getSourceStrictComplex output, EasyEDA
+          // TPCB_PolygonSourceArray format with L/ARC/CARC/R/CIRCLE tokens, in the
+          // poured ~10-mil unit). Parsing + arc discretization happens on the Python
+          // side so it can be refined without re-importing the extension.
+          const cp = asRecord(f.path).complexPolygon;
+          const cpObj = cp as Record<string, unknown>;
+          const strict = typeof cpObj.getSourceStrictComplex === 'function'
+            ? (cpObj.getSourceStrictComplex as () => unknown).call(cpObj)
+            : typeof cpObj.getSource === 'function'
+              ? (cpObj.getSource as () => unknown).call(cpObj)
+              : cp;
+          return { solid: f.fill, lineWidth: f.lineWidth, source: strict };
         }),
       };
     });
@@ -256,16 +263,17 @@ export function createExportOperations({
     const sampleCp = asRecord(asRecord((asRecord(poured[0]).pourFills as unknown[])?.[0]).path)
       .complexPolygon;
     let pmin = Infinity, pmax = -Infinity;
-    for (const p of pouredList)
-      for (const f of p.fills)
-        for (const r of f.rings)
-          for (const v of r) { if (v < pmin) pmin = v; if (v > pmax) pmax = v; }
+    const flatNums = (v: unknown): void => {
+      if (typeof v === 'number') { if (v < pmin) pmin = v; if (v > pmax) pmax = v; }
+      else if (Array.isArray(v)) for (const x of v) flatNums(x);
+    };
+    for (const p of pouredList) for (const f of p.fills) flatNums(f.source);
     const probe = {
       pourCount: pours.length,
       pouredCount: poured.length,
       boundariesExtracted: pourList.filter((p) => p.boundary.length > 0).length,
-      pouredFillsWithRings: pouredList.reduce(
-        (sum, p) => sum + p.fills.filter((f) => f.rings.length > 0).length,
+      pouredFillsWithSource: pouredList.reduce(
+        (sum, p) => sum + p.fills.filter((f) => Array.isArray(f.source) && f.source.length > 0).length,
         0,
       ),
       pouredCoordRange: [pmin === Infinity ? null : Math.round(pmin), pmax === -Infinity ? null : Math.round(pmax)],
