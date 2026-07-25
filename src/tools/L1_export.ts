@@ -740,6 +740,60 @@ function registerExportTools(
       }
     },
   });
+
+  registry.register({
+    name: 'easyeda_pcb_export_pours',
+    title: 'Export net-tagged copper pours',
+    description:
+      'Export copper pours/planes with their net, layer, priority, boundary, and resolved (antipad-subtracted) geometry to a JSON artifact. Fills the gap left by the DSN/Gerber trace exports (which omit pours) and by the raw getAll API (whose nested geometry truncates as "[MaxDepth]"). Read-only; writes one JSON file.',
+    profile: 'pro',
+    evidence: ['official-docs', 'inferred'],
+    risk: 'low',
+    confirmWrite: false,
+    sideEffect: 'artifact-write',
+    group: 'export',
+    version: '1.0.0',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
+    inputSchema: z.object({
+      projectId: z.string(),
+      filePath: z.string().optional(),
+    }),
+    outputSchema: z.object({
+      project_id: z.string(),
+      file_path: z.string().optional(),
+      byte_length: z.number().int().nonnegative().optional(),
+      exported: z.boolean(),
+      not_available: z.boolean().optional(),
+      error: z.string().optional(),
+    }),
+    handler: async (ctx: ToolContext, params: unknown) => {
+      const { projectId, filePath } = params as { projectId: string; filePath?: string };
+      try {
+        const result = await ctx.bridge.call('pcb.exportPours', { projectId });
+        const written = writeExportPayload(ctx, result, filePath, `${projectId}-pours.json`);
+        if (!written.ok) {
+          return { project_id: projectId, exported: false, not_available: true, error: written.error };
+        }
+        return {
+          project_id: projectId,
+          file_path: written.filePath,
+          byte_length: written.byteLength,
+          exported: true,
+        };
+      } catch (err) {
+        return {
+          project_id: projectId,
+          exported: false,
+          not_available: true,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  });
 }
 
 export { registerExportTools };
