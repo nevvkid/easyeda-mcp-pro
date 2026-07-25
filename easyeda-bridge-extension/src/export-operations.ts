@@ -13,10 +13,32 @@ export interface ExportOperations {
   exportPdf(params: Record<string, unknown>): Promise<unknown>;
   exportNetlist(params: Record<string, unknown>): Promise<unknown>;
   exportPours(params: Record<string, unknown>): Promise<unknown>;
+  exportPads(params: Record<string, unknown>): Promise<unknown>;
+  exportRouting(params: Record<string, unknown>): Promise<unknown>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
+
+/** First defined value across candidate lowercase getters, then `state.Capital`. */
+function pick(obj: Record<string, unknown>, state: Record<string, unknown>, keys: string[]): unknown {
+  for (const k of keys) {
+    if (obj[k] !== undefined && obj[k] !== null) return obj[k];
+    const cap = k.charAt(0).toUpperCase() + k.slice(1);
+    if (state[cap] !== undefined && state[cap] !== null) return state[cap];
+  }
+  return undefined;
+}
+
+/** Scalar-only view of a primitive's `state`, for the schema probe. */
+function scalarState(obj: Record<string, unknown>): Record<string, unknown> {
+  const state = asRecord(obj.state);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(state)) {
+    if (v === null || ['string', 'number', 'boolean'].includes(typeof v)) out[k] = v;
+  }
+  return out;
 }
 
 /**
@@ -173,6 +195,93 @@ export function createExportOperations({
     return { base64: utf8Base64(json), fileName: 'pours.json' };
   }
 
+  /**
+   * Export every copper pad with its net, layer, position and size to a JSON
+   * artifact. This is the data the DSN/Gerber exports don't carry per-pad with
+   * net identity, and it's what enables cap→IC-power-pin decoupling proximity
+   * and near-field (compact-aggressor) coupling checks. Defensive field access
+   * (lowercase getter or `state.Capital`) plus a schema probe, so a first live
+   * run yields usable net+position data regardless of the exact field names.
+   */
+  async function exportPads(_params: Record<string, unknown>): Promise<unknown> {
+    const pads = (await callFirst(['PCB_PrimitivePad.getAll'])) as unknown[];
+    const list = pads.map((raw) => {
+      const p = asRecord(raw);
+      const s = asRecord(p.state);
+      return {
+        id: pick(p, s, ['primitiveId']),
+        net: pick(p, s, ['net']),
+        layer: pick(p, s, ['layer']),
+        x: pick(p, s, ['x', 'centerX', 'positionX']),
+        y: pick(p, s, ['y', 'centerY', 'positionY']),
+        pad: pick(p, s, ['padNumber', 'number', 'name', 'pinNumber']),
+        designator: pick(p, s, ['designator', 'componentDesignator', 'parentDesignator']),
+        width: pick(p, s, ['width', 'padWidth']),
+        height: pick(p, s, ['height', 'padHeight']),
+        hole: pick(p, s, ['holeDiameter', 'holeD', 'drill']),
+        rotation: pick(p, s, ['rotation']),
+      };
+    });
+    const first = asRecord(pads[0]);
+    const probe = {
+      padCount: pads.length,
+      withNet: list.filter((p) => p.net != null).length,
+      withXY: list.filter((p) => p.x != null && p.y != null).length,
+      withDesignator: list.filter((p) => p.designator != null).length,
+      // Reveal the true field names if any of the above come back empty:
+      firstPadKeys: Object.keys(first).slice(0, 40),
+      firstPadState: scalarState(first),
+    };
+    const json = JSON.stringify({ schema: 'easyeda-pads@1', pads: list, probe });
+    return { base64: utf8Base64(json), fileName: 'pads.json' };
+  }
+
+  /**
+   * Export routed copper tracks (PCB_PrimitiveLine segments) and vias with their
+   * nets/layers/coordinates/widths to one JSON artifact. Field names mirror the
+   * proven `pcb.listTracks`/`pcb.listVias` read ops. Lets analysis run fully from
+   * EasyEDA's own primitives — no Specctra-DSN round-trip and its reuse-block
+   * name quirks, and no 200-row pagination.
+   */
+  async function exportRouting(_params: Record<string, unknown>): Promise<unknown> {
+    const lines = (await callFirst(['PCB_PrimitiveLine.getAll'])) as unknown[];
+    const vias = (await callFirst(['PCB_PrimitiveVia.getAll'])) as unknown[];
+    const tracks = lines.map((raw) => {
+      const l = asRecord(raw);
+      const s = asRecord(l.state);
+      return {
+        net: pick(l, s, ['net']),
+        layer: pick(l, s, ['layer']),
+        x1: pick(l, s, ['startX']),
+        y1: pick(l, s, ['startY']),
+        x2: pick(l, s, ['endX']),
+        y2: pick(l, s, ['endY']),
+        width: pick(l, s, ['lineWidth', 'width']),
+      };
+    });
+    const viaList = vias.map((raw) => {
+      const v = asRecord(raw);
+      const s = asRecord(v.state);
+      return {
+        net: pick(v, s, ['net']),
+        x: pick(v, s, ['x']),
+        y: pick(v, s, ['y']),
+        hole: pick(v, s, ['holeDiameter']),
+        diameter: pick(v, s, ['diameter']),
+      };
+    });
+    const probe = {
+      trackCount: tracks.length,
+      viaCount: viaList.length,
+      tracksWithNet: tracks.filter((t) => t.net != null).length,
+      tracksWithCoords: tracks.filter((t) => t.x1 != null && t.y1 != null).length,
+      firstTrackState: scalarState(asRecord(lines[0])),
+      firstViaState: scalarState(asRecord(vias[0])),
+    };
+    const json = JSON.stringify({ schema: 'easyeda-routing@1', tracks, vias: viaList, probe });
+    return { base64: utf8Base64(json), fileName: 'routing.json' };
+  }
+
   return {
     exportGerbers,
     exportRouteContext,
@@ -180,5 +289,7 @@ export function createExportOperations({
     exportPdf,
     exportNetlist,
     exportPours,
+    exportPads,
+    exportRouting,
   };
 }

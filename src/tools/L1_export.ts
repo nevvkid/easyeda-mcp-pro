@@ -794,6 +794,114 @@ function registerExportTools(
       }
     },
   });
+
+  registry.register({
+    name: 'easyeda_pcb_export_pads',
+    title: 'Export copper pads with nets',
+    description:
+      'Export every copper pad with its net, layer, position, size and hole to a JSON artifact. Provides the per-pad net+position data the DSN/Gerber exports omit — the basis for decoupling-proximity (cap → IC power pin) and near-field coupling checks. Read-only; writes one JSON file.',
+    profile: 'pro',
+    evidence: ['official-docs', 'inferred'],
+    risk: 'low',
+    confirmWrite: false,
+    sideEffect: 'artifact-write',
+    group: 'export',
+    version: '1.0.0',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
+    inputSchema: z.object({
+      projectId: z.string(),
+      filePath: z.string().optional(),
+    }),
+    outputSchema: z.object({
+      project_id: z.string(),
+      file_path: z.string().optional(),
+      byte_length: z.number().int().nonnegative().optional(),
+      exported: z.boolean(),
+      not_available: z.boolean().optional(),
+      error: z.string().optional(),
+    }),
+    handler: async (ctx: ToolContext, params: unknown) => {
+      const { projectId, filePath } = params as { projectId: string; filePath?: string };
+      try {
+        const result = await ctx.bridge.call('pcb.exportPads', { projectId });
+        const written = writeExportPayload(ctx, result, filePath, `${projectId}-pads.json`);
+        if (!written.ok) {
+          return { project_id: projectId, exported: false, not_available: true, error: written.error };
+        }
+        return {
+          project_id: projectId,
+          file_path: written.filePath,
+          byte_length: written.byteLength,
+          exported: true,
+        };
+      } catch (err) {
+        return {
+          project_id: projectId,
+          exported: false,
+          not_available: true,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  });
+
+  registry.register({
+    name: 'easyeda_pcb_export_routing',
+    title: 'Export routed tracks and vias with nets',
+    description:
+      'Export routed copper tracks (segments) and vias with their nets, layers, coordinates and widths to one JSON artifact. Lets layout analysis run entirely from EasyEDA primitives — no Specctra-DSN round-trip (and its reuse-block name quirks) and no pagination. Read-only; writes one JSON file.',
+    profile: 'pro',
+    evidence: ['official-docs', 'inferred'],
+    risk: 'low',
+    confirmWrite: false,
+    sideEffect: 'artifact-write',
+    group: 'export',
+    version: '1.0.0',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
+    inputSchema: z.object({
+      projectId: z.string(),
+      filePath: z.string().optional(),
+    }),
+    outputSchema: z.object({
+      project_id: z.string(),
+      file_path: z.string().optional(),
+      byte_length: z.number().int().nonnegative().optional(),
+      exported: z.boolean(),
+      not_available: z.boolean().optional(),
+      error: z.string().optional(),
+    }),
+    handler: async (ctx: ToolContext, params: unknown) => {
+      const { projectId, filePath } = params as { projectId: string; filePath?: string };
+      try {
+        const result = await ctx.bridge.call('pcb.exportRouting', { projectId });
+        const written = writeExportPayload(ctx, result, filePath, `${projectId}-routing.json`);
+        if (!written.ok) {
+          return { project_id: projectId, exported: false, not_available: true, error: written.error };
+        }
+        return {
+          project_id: projectId,
+          file_path: written.filePath,
+          byte_length: written.byteLength,
+          exported: true,
+        };
+      } catch (err) {
+        return {
+          project_id: projectId,
+          exported: false,
+          not_available: true,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  });
 }
 
 export { registerExportTools };

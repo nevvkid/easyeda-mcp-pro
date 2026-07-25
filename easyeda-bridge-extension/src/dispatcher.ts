@@ -89,6 +89,8 @@ const METHOD_LIST: readonly string[] = [
   'pcb.deleteComponent',
   'pcb.exportRouteContext',
   'pcb.exportPours',
+  'pcb.exportPads',
+  'pcb.exportRouting',
   'pcb.listComponents',
   'pcb.listTracks',
   'pcb.listVias',
@@ -2107,6 +2109,10 @@ async function dispatch(method: string, params: Record<string, unknown> = {}): P
       return exportOperations.exportRouteContext(params);
     case 'pcb.exportPours':
       return exportOperations.exportPours(params);
+    case 'pcb.exportPads':
+      return exportOperations.exportPads(params);
+    case 'pcb.exportRouting':
+      return exportOperations.exportRouting(params);
     case 'system.getStatus': {
       const globals: Record<string, unknown> = {};
       const edaObj = tk.getEda();
